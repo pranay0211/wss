@@ -1,16 +1,16 @@
+import io.vertx.circuitbreaker.CircuitBreaker;
+import io.vertx.circuitbreaker.CircuitBreakerOptions;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Vertx;
 import io.vertx.ext.web.Router;
-import io.vertx.ext.web.handler.sockjs.SockJSHandler;
-import io.vertx.ext.web.handler.sockjs.BridgeOptions;
 import io.vertx.ext.web.handler.sockjs.SockJSBridgeOptions;
+import io.vertx.ext.web.handler.sockjs.BridgeEventType;
+import io.vertx.ext.web.handler.sockjs.SockJSHandler;
 import io.vertx.ext.web.handler.sockjs.PermittedOptions;
-import io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions;
 import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.ext.web.handler.CorsHandler;
 import io.vertx.ext.ratelimiter.RateLimiter;
 import io.vertx.ext.ratelimiter.RateLimiterOptions;
-import io.vertx.ext.ratelimiter.impl.LimitGuardian;
 
 public class WebSocketServerVerticle extends AbstractVerticle {
 
@@ -18,7 +18,7 @@ public class WebSocketServerVerticle extends AbstractVerticle {
     public void start() {
         Router router = Router.router(vertx);
 
-        // Enable CORS support if needed
+        // Enable CORS support
         router.route().handler(CorsHandler.create("*"));
 
         // Enable BodyHandler to handle request bodies
@@ -30,28 +30,49 @@ public class WebSocketServerVerticle extends AbstractVerticle {
                 .setResetTimeout(1000) // Reset rate limit counters every second
         );
 
-        // Enable WebSocket support
-        SockJSHandlerOptions options = new SockJSHandlerOptions().setHeartbeatInterval(2000); // Set the heartbeat interval (optional)
-        SockJSHandler sockJSHandler = SockJSHandler.create(vertx, options);
+        // Set up the circuit breaker
+        CircuitBreakerOptions circuitBreakerOptions = new CircuitBreakerOptions()
+                .setMaxFailures(5) // Number of failures before opening the circuit
+                .setTimeout(2000) // Time in milliseconds after which the operation is considered a failure
+                .setResetTimeout(5000); // Time in milliseconds circuit breaker should wait before trying to re-engage (close the circuit) after a failure
 
-        BridgeOptions bridgeOptions = new BridgeOptions()
+        CircuitBreaker circuitBreaker = CircuitBreaker.create("websocket-circuit-breaker", vertx, circuitBreakerOptions);
+
+        // Enable WebSocket support
+        SockJSBridgeOptions bridgeOptions = new SockJSBridgeOptions()
                 .addInboundPermitted(new PermittedOptions().setAddress("some.inbound.address"))
                 .addOutboundPermitted(new PermittedOptions().setAddress("some.outbound.address"));
 
-        sockJSHandler.bridge(bridgeOptions, event -> {
-            // Implement your rate limiting logic here
-            if (event.type() == BridgeEventType.SOCKET_CREATED) {
-                rateLimiter.acquire(1, res -> {
-                    if (res.succeeded()) {
-                        event.complete(true);
-                    } else {
-                        event.complete(false);
+        SockJSHandler sockJSHandler = SockJSHandler.create(vertx)
+                .bridge(bridgeOptions, event -> {
+                    // Handle onOpen event
+                    if (event.type() == BridgeEventType.SOCKET_CREATED) {
+                        rateLimiter.acquire(1, res -> {
+                            if (res.succeeded()) {
+                                circuitBreaker.execute(future -> {
+                                    // Handle WebSocket connection logic here
+                                    // For example, sending a welcome message to the client
+                                    event.socket().write("Welcome to the WebSocket server!");
+
+                                    // Set up the onClose event handler
+                                    event.socket().closeHandler(close -> {
+                                        // Handle the WebSocket connection closing here
+                                        System.out.println("WebSocket connection closed.");
+                                    });
+
+                                    future.complete(true);
+                                }, throwable -> {
+                                    // Circuit breaker is open, return a fallback response
+                                    event.complete(false);
+                                    return null;
+                                });
+                            } else {
+                                // Rate limit exceeded, reject the connection
+                                event.complete(false);
+                            }
+                        });
                     }
                 });
-            } else {
-                event.complete(true);
-            }
-        });
 
         router.route("/websocket/*").handler(sockJSHandler);
 
