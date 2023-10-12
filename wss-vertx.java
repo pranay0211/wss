@@ -1,58 +1,70 @@
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Vertx;
-import io.vertx.core.http.HttpServer;
-import io.vertx.core.http.HttpServerOptions;
-import io.vertx.core.http.ServerWebSocket;
-import io.vertx.core.json.JsonObject;
-
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import io.vertx.ext.web.Router;
+import io.vertx.ext.web.handler.sockjs.SockJSHandler;
+import io.vertx.ext.web.handler.sockjs.BridgeOptions;
+import io.vertx.ext.web.handler.sockjs.SockJSBridgeOptions;
+import io.vertx.ext.web.handler.sockjs.PermittedOptions;
+import io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions;
+import io.vertx.ext.web.handler.BodyHandler;
+import io.vertx.ext.web.handler.CorsHandler;
+import io.vertx.ext.ratelimiter.RateLimiter;
+import io.vertx.ext.ratelimiter.RateLimiterOptions;
+import io.vertx.ext.ratelimiter.impl.LimitGuardian;
 
 public class WebSocketServerVerticle extends AbstractVerticle {
 
-    private Map<String, ServerWebSocket> sessions = new ConcurrentHashMap<>();
-
     @Override
     public void start() {
-        HttpServerOptions serverOptions = new HttpServerOptions().setSsl(true); // SSL enabled, configure with your certificate
-        HttpServer httpServer = vertx.createHttpServer(serverOptions);
+        Router router = Router.router(vertx);
 
-        httpServer.webSocketHandler(webSocket -> {
-            String sessionId = generateSessionId();
-            sessions.put(sessionId, webSocket);
+        // Enable CORS support if needed
+        router.route().handler(CorsHandler.create("*"));
 
-            // Handle messages from clients
-            webSocket.handler(buffer -> {
-                System.out.println("Received message from client: " + buffer.toString());
-                // Process the message and send a response if needed
-            });
+        // Enable BodyHandler to handle request bodies
+        router.route().handler(BodyHandler.create());
 
-            // Handle WebSocket closure
-            webSocket.closeHandler(close -> {
-                System.out.println("WebSocket closed for session: " + sessionId);
-                sessions.remove(sessionId);
-            });
+        // Set up rate limiting for WebSocket connections
+        RateLimiter rateLimiter = RateLimiter.create(vertx, new RateLimiterOptions()
+                .setLimit(10) // Set the maximum number of requests allowed per second
+                .setResetTimeout(1000) // Reset rate limit counters every second
+        );
 
-            // Handle exceptions
-            webSocket.exceptionHandler(e -> {
-                System.out.println("WebSocket error for session " + sessionId + ": " + e.getMessage());
-                sessions.remove(sessionId);
-            });
-        });
+        // Enable WebSocket support
+        SockJSHandlerOptions options = new SockJSHandlerOptions().setHeartbeatInterval(2000); // Set the heartbeat interval (optional)
+        SockJSHandler sockJSHandler = SockJSHandler.create(vertx, options);
 
-        httpServer.listen(443, result -> {
-            if (result.succeeded()) {
-                System.out.println("WebSocket server started");
+        BridgeOptions bridgeOptions = new BridgeOptions()
+                .addInboundPermitted(new PermittedOptions().setAddress("some.inbound.address"))
+                .addOutboundPermitted(new PermittedOptions().setAddress("some.outbound.address"));
+
+        sockJSHandler.bridge(bridgeOptions, event -> {
+            // Implement your rate limiting logic here
+            if (event.type() == BridgeEventType.SOCKET_CREATED) {
+                rateLimiter.acquire(1, res -> {
+                    if (res.succeeded()) {
+                        event.complete(true);
+                    } else {
+                        event.complete(false);
+                    }
+                });
             } else {
-                System.out.println("WebSocket server failed to start: " + result.cause().getMessage());
+                event.complete(true);
             }
         });
-    }
 
-    private String generateSessionId() {
-        // Implement your session ID generation logic here
-        // For example, you can use UUID.randomUUID().toString()
-        return "some-unique-session-id";
+        router.route("/websocket/*").handler(sockJSHandler);
+
+        // Start the HTTP server
+        vertx.createHttpServer()
+            .requestHandler(router)
+            .listen(8080, ar -> {
+                if (ar.succeeded()) {
+                    System.out.println("WebSocket server started on port 8080");
+                } else {
+                    System.out.println("Failed to start WebSocket server: " + ar.cause().getMessage());
+                }
+            });
     }
 
     public static void main(String[] args) {
