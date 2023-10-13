@@ -1,0 +1,28 @@
+Feature: WebSocket Connection Testing
+
+  Scenario: Establish WebSocket Connection
+    Given the WebSocket endpoint is "ws://localhost:8080/websocket/some/path"
+    When the client establishes a WebSocket connection
+    Then the WebSocket connection should be established successfully
+
+  Scenario: WebSocket Circuit Breaker
+    Given the WebSocket endpoint is "ws://localhost:8080/websocket/some/path"
+    When the client triggers a WebSocket circuit breaker event
+    Then the WebSocket circuit breaker should transition to the open state
+
+  Scenario: Rate Limiter
+    Given the WebSocket endpoint is "ws://localhost:8080/websocket/some/path"
+    When the client sends more than 100 requests in a minute
+    Then the WebSocket server should limit the requests
+
+  Scenario: WebSocket Event Handling
+    Given the WebSocket endpoint is "ws://localhost:8080/websocket/some/path"
+    When the client establishes a WebSocket connection
+    And the client closes the WebSocket connection
+    Then the WebSocket server should handle onConnect and onClose events
+
+  Scenario: WebSocket Message Exchange
+    Given the WebSocket endpoint is "ws://localhost:8080/websocket/some/path"
+    When the client establishes a WebSocket connection
+    And the client sends a message "Hello, WebSocket!"
+    Then the WebSocket server should receive the message and respond
